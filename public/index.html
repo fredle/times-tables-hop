@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+  <title>Times Tables Hop</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <main id="app">
+    <header id="hud">
+      <div class="stat"><span class="label">Score</span><span id="score">0</span></div>
+      <div class="stat"><span class="label">Level</span><span id="level">1</span></div>
+      <div class="stat"><span class="label">Lives</span><span id="lives"></span></div>
+      <div id="mic" class="mic off" title="Microphone"><span class="dot"></span><span id="micText">Mic off</span></div>
+    </header>
+
+    <section id="questionBar">
+      <div id="question">Ready?</div>
+      <div id="timer"><div id="timerFill"></div></div>
+      <div id="heard">&nbsp;</div>
+    </section>
+
+    <div id="stage">
+      <canvas id="c" width="800" height="600"></canvas>
+
+      <div id="menu" class="panel">
+        <h1>Times Tables Hop</h1>
+        <p id="menuMsg">Say what you see out loud to hop out of the way before the traffic gets you!</p>
+        <div id="result" hidden></div>
+        <h2>Game</h2>
+        <div id="modes" class="chips">
+          <button type="button" data-mode="numbers">Numbers 1–9</button>
+          <button type="button" data-mode="letters">Letters</button>
+          <button type="button" data-mode="words">Words</button>
+          <button type="button" data-mode="tables">Times tables</button>
+        </div>
+        <div id="tablesSection">
+          <h2>Which tables?</h2>
+          <div id="tables" class="chips"></div>
+        </div>
+        <h2>Speed</h2>
+        <div id="speeds" class="chips">
+          <button type="button" data-speed="relaxed">Relaxed</button>
+          <button type="button" data-speed="normal">Normal</button>
+          <button type="button" data-speed="speedy">Speedy</button>
+        </div>
+        <button id="startBtn" type="button" class="big">Play</button>
+        <p id="voiceNote" class="note"></p>
+      </div>
+    </div>
+
+    <form id="answerForm" autocomplete="off">
+      <label for="answerInput">Or type it:</label>
+      <input id="answerInput" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="3" placeholder="?">
+      <button type="submit">Go</button>
+    </form>
+  </main>
+  <script type="module" src="game.js"></script>
+</body>
+</html>

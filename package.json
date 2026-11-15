@@ -1,0 +1,10 @@
+{
+  "name": "times-tables-hop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Voice-controlled times tables games. Say the answer to hop across the road.",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.js",
+    "test": "node --test"
+  }
+}
