@@ -1,6 +1,10 @@
-import { extractNumbers } from './numbers.js';
-import { isReadingMode, items, accepted, vocabulary, matchesSpoken, normalise } from './reading.js';
-import { VoiceInput, NativeVoiceInput, nativeBridge } from './voice.js';
+import { judgeNumbers } from './numbers.js';
+import { isReadingMode, items, accepted, vocabulary, matchesSpoken, soundMatches, normalise } from './reading.js';
+import { createBridgeGame } from './bridge.js';
+import { hintsFor, spellingHints } from './hints.js';
+import { createSpellingPuzzles, tidy } from './spelling.js';
+import { COLOURS, makeSequence, nextVocabulary } from './next.js';
+import { VoiceInput, NativeVoiceInput, PhonemeVoiceInput, nativeBridge } from './voice.js';
 
 // ---------- constants ----------
 // Tall playfield on phones held upright, wide one everywhere else.
@@ -47,10 +51,25 @@ function save(key, value) {
 const settings = load('tth.settings', { tables: [2, 5, 10], speed: 'normal' });
 if (!Array.isArray(settings.tables) || !settings.tables.length) settings.tables = [2, 5, 10];
 if (!SPEEDS[settings.speed]) settings.speed = 'normal';
-if (!['tables', 'numbers', 'letters', 'words'].includes(settings.mode)) settings.mode = 'tables';
+if (!['tables', 'numbers', 'letters', 'words', 'next', 'spelling', 'record'].includes(settings.mode)) settings.mode = 'tables';
+if (settings.mode === 'record' && nativeBridge) settings.mode = 'letters'; // recording needs the web server
 const numbersMode = () => settings.mode === 'numbers';
-const readingMode = () => isReadingMode(settings.mode);
+// "Record sounds" plays like the Letters game, but a grown-up marks each
+// attempt right or wrong and every clip is saved for training.
+const recordMode = () => settings.mode === 'record';
+const readingMode = () => isReadingMode(settings.mode) || recordMode();
+const itemsMode = () => (recordMode() ? 'letters' : settings.mode);
 const tablesMode = () => settings.mode === 'tables';
+const nextMode = () => settings.mode === 'next';
+// Spelling is typed, not spoken.
+const spellingMode = () => settings.mode === 'spelling';
+// Every game can be played crossing the road or mending the bridge
+// (recording sounds stays on the road, where nothing rushes the child).
+const SCENE_MODES = ['numbers', 'letters', 'words', 'next', 'tables', 'spelling'];
+if (settings.scene !== 'bridge') settings.scene = 'road';
+const bridgeScene = () => settings.scene === 'bridge' && SCENE_MODES.includes(settings.mode);
+// What the speech recogniser should expect in the chosen game.
+const hints = () => (nextMode() ? nextVocabulary() : vocabulary(settings.mode));
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 let best = load('tth.best', 0);
 
@@ -61,16 +80,41 @@ for (let n = 1; n <= 12; n++) {
   b.dataset.table = n;
   el.tables.appendChild(b);
 }
+const speakerName = () => $('speakerName').value.toLowerCase().replace(/[^a-z0-9-]/g, '').slice(0, 30);
+$('speakerName').value = load('tth.speaker', '');
+$('speakerName').addEventListener('input', () => renderChips());
+
 function renderChips() {
   el.tables.querySelectorAll('button').forEach((b) => b.classList.toggle('on', settings.tables.includes(+b.dataset.table)));
   el.speeds.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.speed === settings.speed));
   el.modes.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === settings.mode));
   el.tablesSection.hidden = !tablesMode();
-  el.startBtn.disabled = tablesMode() && settings.tables.length === 0;
+  $('sceneSection').hidden = !SCENE_MODES.includes(settings.mode);
+  $('scenes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.scene === settings.scene));
+  $('recordSection').hidden = !recordMode();
+  $('recordModeBtn').hidden = Boolean(nativeBridge);
+  el.startBtn.disabled = (tablesMode() && settings.tables.length === 0) || (recordMode() && !speakerName());
 }
 el.modes.addEventListener('click', (e) => {
   if (!e.target.dataset.mode) return;
   settings.mode = e.target.dataset.mode;
+  renderChips();
+  showNote();
+  // The phoneme service takes a while to load after the server starts, so
+  // look again whenever a game is picked.
+  if (!nativeBridge) {
+    fetch('/api/status')
+      .then((r) => r.json())
+      .then((s) => {
+        phonemesAvailable = Boolean(s.phonemes) && Boolean(navigator.mediaDevices && window.AudioWorkletNode);
+        showNote();
+      })
+      .catch(() => {});
+  }
+});
+$('scenes').addEventListener('click', (e) => {
+  if (!e.target.dataset.scene) return;
+  settings.scene = e.target.dataset.scene;
   renderChips();
 });
 el.tables.addEventListener('click', (e) => {
@@ -132,6 +176,7 @@ const g = {
 let qid = 0;
 
 function timeLimit() {
+  if (spellingMode()) return Math.max(12, 26 - (g.level - 1) * 2) * SPEEDS[settings.speed];
   // Little ones get longer, and it speeds up more gently.
   const base = tablesMode() ? Math.max(3.5, 9 - (g.level - 1) * 0.6) : Math.max(5, 10 - (g.level - 1) * 0.5);
   return base * SPEEDS[settings.speed];
@@ -157,17 +202,64 @@ function pickNumber() {
 // A letter or a three-letter word to read aloud.
 function pickReading() {
   g.asked++;
-  const all = items(settings.mode);
+  const all = items(itemsMode());
   let item;
   const due = g.retry.findIndex((r) => r.due <= g.asked);
   if (due >= 0) item = g.retry.splice(due, 1)[0].a;
   else do item = all[Math.floor(Math.random() * all.length)]; while (item === g.lastKey);
   g.lastKey = item;
-  return { a: item, b: 1, answer: item, accept: accepted(settings.mode, item), text: item, plain: true, id: ++qid };
+  return { a: item, b: 1, answer: item, accept: accepted(itemsMode(), item), text: item, plain: true, id: ++qid };
+}
+
+// A colour pattern or number sequence to continue.
+function pickNext() {
+  g.asked++;
+  let seq;
+  const due = g.retry.findIndex((r) => r.due <= g.asked);
+  if (due >= 0) seq = g.retry.splice(due, 1)[0].a;
+  else do seq = makeSequence(g.level); while (seq.shown.join() === g.lastKey);
+  g.lastKey = seq.shown.join();
+  return { a: seq, b: 1, seq, answer: seq.answer, accept: seq.accept, text: `${seq.shown.join(', ')}, ?`, id: ++qid };
+}
+
+// Puts the question in the bar above the game: text for most games, a row
+// of coloured dots or numbers for "What comes next?".
+function showQuestion(q, solved, missed = false) {
+  if (q.spell) return q.spell.show(!solved ? 'ask' : missed ? 'revealed' : 'right');
+  if (!q.seq) {
+    el.question.textContent = label(q, solved);
+    return;
+  }
+  const item = (value, isAnswer) => {
+    const span = document.createElement('span');
+    if (q.seq.kind === 'colour' && value !== '?') {
+      span.className = 'dot';
+      span.style.background = COLOURS[value].css;
+      span.title = value;
+    } else {
+      span.className = 'num';
+      span.textContent = value;
+    }
+    if (isAnswer) span.classList.add('answer');
+    return span;
+  };
+  el.question.replaceChildren(...q.seq.shown.map((v) => item(v, false)), item(solved ? q.seq.answer : '?', true));
+}
+
+// A sentence with one misspelt word, for the road (the bridge takes the
+// puzzle as it is).
+function pickSpelling() {
+  g.asked++;
+  const due = g.retry.findIndex((r) => r.due <= g.asked);
+  const puzzle = due >= 0 ? g.retry.splice(due, 1)[0].a : spellingPuzzles.next(g.level);
+  const right = puzzle.right.toLowerCase();
+  return { a: puzzle, b: 1, spell: puzzle, answer: right, accept: [right], text: puzzle.source, id: ++qid };
 }
 
 function pickQuestion() {
+  if (spellingMode()) return pickSpelling();
   if (numbersMode()) return pickNumber();
+  if (nextMode()) return pickNext();
   if (readingMode()) return pickReading();
   g.asked++;
   let a, b;
@@ -187,12 +279,16 @@ function pickQuestion() {
 }
 
 function askQuestion() {
+  clearHint();
   g.q = pickQuestion();
+  g.q.shownAt = performance.now();
+  if (soundVoice) soundVoice.target = g.q.accept ? g.q.text : '';
   markSpeechConsumed();
   el.question.className = '';
-  el.question.textContent = label(g.q, false);
+  showQuestion(g.q, false);
   el.heard.innerHTML = '&nbsp;';
-  if (g.frog.row >= 1 && g.frog.row <= LANES) spawnThreat();
+  // No traffic while recording: the child should not be rushed.
+  if (g.frog.row >= 1 && g.frog.row <= LANES && !recordMode()) spawnThreat();
 }
 
 function spawnThreat() {
@@ -220,28 +316,130 @@ function releaseThreat() {
   g.threat = null;
 }
 
+// The typing box: a fallback in the spoken games, the way to play in Spelling Bridge.
+function setUpTyping() {
+  const spell = spellingMode();
+  el.form.classList.toggle('spelling', spell);
+  el.form.querySelector('label').textContent = spell ? 'Correct spelling:' : 'Or type it:';
+  el.input.placeholder = spell ? '' : '?';
+  // The phone must not fix the spelling for them.
+  el.input.spellcheck = false;
+  el.input.setAttribute('autocorrect', 'off');
+  el.input.setAttribute('autocomplete', 'off');
+  el.input.value = '';
+}
+
 function startGame() {
   Object.assign(g, { mode: 'playing', score: 0, lives: 3, level: 1, streak: 0, asked: 0, cars: [], threat: null, particles: [], retry: [], after: null, lastKey: '' });
   g.frog = { row: 0, y: rowY(0), hop: null, flat: false };
   el.menu.hidden = true;
+  $('backBtn').hidden = false;
+  $('hintBtn').hidden = false;
+  pendingClip = null;
+  savedClips = 0;
+  setUpTyping();
+  el.form.hidden = recordMode();
+  if (recordMode()) save('tth.speaker', speakerName());
   // The typing fallback takes letters in the reading games, digits otherwise.
-  el.input.inputMode = readingMode() ? 'text' : 'numeric';
-  if (readingMode()) el.input.removeAttribute('pattern');
+  const typesWords = readingMode() || nextMode() || spellingMode();
+  el.input.inputMode = typesWords ? 'text' : 'numeric';
+  el.input.maxLength = spellingMode() ? 20 : nextMode() ? 6 : 3;
+  if (typesWords) el.input.removeAttribute('pattern');
   else el.input.setAttribute('pattern', '[0-9]*');
   el.input.autocapitalize = 'off';
   updateHud();
+  showJudge(true);
+  if (bridgeScene()) {
+    g.q = null;
+    if (spellingMode()) {
+      spellingPuzzles.reset();
+      el.input.focus();
+    }
+    bridge.start(nextBridgePuzzle);
+    return;
+  }
   askQuestion();
+  if (spellingMode()) el.input.focus();
+}
+
+// ---------- the bridge versions of the games ----------
+function nextBridgePuzzle() {
+  clearHint();
+  if (spellingMode()) return spellingPuzzles.next(g.level);
+  g.q = pickQuestion();
+  g.q.shownAt = performance.now();
+  markSpeechConsumed();
+  return questionPuzzle(g.q);
+}
+
+// Lays a question out as planks with the answer missing.
+function questionPuzzle(q) {
+  const text = (t) => ({ text: String(t) });
+  let items;
+  let brokenIndex;
+  let mended;
+  let bar = null; // what the question bar shows, when it differs from the road game
+  let shown = text('?'); // what the broken plank shows
+  let prompt = voice.active ? 'Say what is missing to mend the bridge.' : 'Type what is missing to mend the bridge.';
+  if (q.seq) {
+    // What comes next?: the pattern, then a gap.
+    const item = (v) => (q.seq.kind === 'colour' ? { colour: COLOURS[v].css } : text(v));
+    items = [...q.seq.shown.map(item), text('?')];
+    brokenIndex = items.length - 1;
+    mended = item(q.seq.answer);
+  } else if (q.accept) {
+    // Letters and words: read what is on the broken plank.
+    items = [text(''), text(q.text), text('')];
+    brokenIndex = 1;
+    mended = text(q.text);
+    shown = text(q.text);
+    prompt = 'Say what is on the broken plank to mend the bridge.';
+  } else if (q.plain) {
+    // Numbers: five numbers in a row with one missing.
+    const start = Math.min(Math.max(q.answer - 2, 1), 6);
+    items = [0, 1, 2, 3, 4].map((k) => text(start + k));
+    brokenIndex = q.answer - start;
+    mended = text(q.answer);
+    bar = (solved) => items.map((it, i) => (i === brokenIndex ? (solved ? q.answer : '?') : it.text)).join(', ');
+  } else {
+    // Times tables: the sum, one part per plank.
+    const [x, , y] = q.text.split(' ');
+    items = [text(x), text('×'), text(y), text('='), text('?')];
+    brokenIndex = 4;
+    mended = text(q.answer);
+  }
+  return {
+    items,
+    brokenIndex,
+    broken: shown,
+    mended,
+    prompt,
+    reveal: `It was ${q.answer}. That one will come back.`,
+    hint: () => '',
+    show(state) {
+      el.question.className = state === 'right' ? 'good' : state === 'revealed' ? 'bad' : '';
+      if (bar) el.question.textContent = bar(state !== 'ask');
+      else showQuestion(q, state !== 'ask');
+    },
+  };
 }
 
 function correct() {
+  if (bridgeScene()) {
+    if (!bridge.ready()) return;
+    g.q = null;
+    clearTimeout(settleTimer);
+    bridge.right();
+    return;
+  }
   const q = g.q;
   g.q = null;
   clearTimeout(settleTimer);
   g.streak++;
   const left = g.threat ? Math.max(0, 1 - g.threat.t / g.threat.limit) : 0.5;
-  g.score += 10 + Math.round(left * 10) + Math.min(g.streak - 1, 5) * 2;
+  g.score += 10 + Math.round(left * 10) + Math.min(g.streak - 1, 5) * 2 - Math.min(8, g.hints * 4);
   el.question.className = 'good';
-  el.question.textContent = label(q, true);
+  showQuestion(q, true);
   releaseThreat();
   g.frog.hop = { from: g.frog.y, to: rowY(g.frog.row + 1), t: 0 };
   burst(FROG_X, g.frog.y, 10, ['#fff', '#ffe066']);
@@ -250,7 +448,11 @@ function correct() {
 }
 
 function wrong(value) {
-  el.heard.textContent = `I heard ${value}. Try again!`;
+  if (bridgeScene()) {
+    bridge.wrong(`I heard ${value}.`);
+    return;
+  }
+  el.heard.textContent = spellingMode() ? 'Not quite. Try again!' : `I heard ${value}. Try again!`;
   el.question.classList.remove('shake');
   void el.question.offsetWidth;
   el.question.classList.add('shake');
@@ -295,7 +497,7 @@ function runOver() {
   g.frog.flat = true;
   g.retry.push({ a: q.a, b: q.b, due: g.asked + 2 });
   el.question.className = 'bad';
-  el.question.textContent = label(q, true);
+  showQuestion(q, true, true);
   el.heard.textContent = 'Splat! Remember that one.';
   releaseThreat();
   sfx.splat();
@@ -311,8 +513,69 @@ function runOver() {
   };
 }
 
+// ---------- hints ----------
+// Each press shows the next hint for the question on screen (the last one
+// stays). A hinted answer scores a little less.
+function clearHint() {
+  g.hints = 0;
+  $('hint').hidden = true;
+  $('hint').textContent = '';
+}
+
+function showHint() {
+  if (g.mode !== 'playing') return;
+  let hints;
+  if (spellingMode() && bridgeScene()) {
+    if (!bridge.ready()) return;
+    hints = spellingHints(bridge.state.puzzle.right);
+  } else if (g.q && g.q.spell) {
+    hints = spellingHints(g.q.spell.right);
+  } else {
+    if (!g.q) return;
+    hints = hintsFor(g.q, bridgeScene());
+  }
+  g.hints = Math.min(hints.length, g.hints + 1);
+  $('hint').textContent = `💡 ${hints[g.hints - 1]}`;
+  $('hint').hidden = false;
+  if (!el.form.hidden && spellingMode()) el.input.focus();
+}
+$('hintBtn').addEventListener('click', showHint);
+
+// Leaves the game in progress and shows the start screen again.
+const MENU_MESSAGE = el.menuMsg.textContent;
+function backToMenu() {
+  g.mode = 'menu';
+  g.q = null;
+  g.after = null;
+  g.cars = [];
+  g.threat = null;
+  g.frog = { row: 0, y: rowY(0), hop: null, flat: false };
+  clearTimeout(settleTimer);
+  pendingClip = null;
+  voice.stop();
+  bridge.state.phase = 'idle';
+  bridge.state.planks = [];
+  $('backBtn').hidden = true;
+  $('hintBtn').hidden = true;
+  clearHint();
+  $('judge').hidden = true;
+  el.menuMsg.textContent = MENU_MESSAGE;
+  el.result.hidden = true;
+  el.startBtn.textContent = 'Play';
+  el.menu.hidden = false;
+  el.question.className = '';
+  el.question.textContent = 'Ready?';
+  el.heard.innerHTML = '&nbsp;';
+  el.timerFill.style.width = '0';
+  el.input.blur();
+}
+$('backBtn').addEventListener('click', backToMenu);
+
 function gameOver() {
   g.mode = 'over';
+  $('backBtn').hidden = true;
+  $('hintBtn').hidden = true;
+  clearHint();
   voice.stop(); // no game, no listening: closes the AssemblyAI session and the mic
   const isBest = g.score > best;
   if (isBest) {
@@ -325,7 +588,9 @@ function gameOver() {
   el.startBtn.textContent = 'Play again';
   el.menu.hidden = false;
   el.question.className = '';
-  el.question.textContent = 'Game over';
+  el.question.textContent = recordMode() ? `${savedClips} clips saved` : 'Game over';
+  $('judge').hidden = true;
+  if (recordMode()) el.menuMsg.textContent = `All done. ${savedClips} clips saved for ${speakerName()}.`;
   el.heard.innerHTML = '&nbsp;';
 }
 
@@ -345,6 +610,20 @@ function burst(x, y, n, colors) {
 
 // ---------- answers: voice + typing ----------
 let voiceAvailable = false;
+const micOk = () => Boolean(navigator.mediaDevices && window.AudioWorkletNode);
+let defaultNote = '';
+// The line under the Play button: what to say in the chosen game.
+function showNote() {
+  el.voiceNote.textContent = recordMode()
+    ? 'Your child says each letter sound; you mark it right or not. Every clip is saved.'
+    : spellingMode()
+      ? 'For Year 4 and up. Find the misspelt word and type it correctly.'
+    : useSounds()
+    ? 'Say the sound the letter makes, like "sss" or "mmm".'
+    : nativeBridge && settings.mode === 'letters'
+      ? 'Say the name of the letter. Letter sounds are not recognised in the app yet.'
+      : defaultNote;
+}
 // A spoken turn can still be in progress when the next question appears, so we
 // remember how many of its words were already used and only judge the rest.
 let lastTurn = -1;
@@ -352,12 +631,14 @@ let lastTurnWords = 0;
 let staleTurn = -1;
 let staleWords = 0;
 let latestText = '';
+let latestTexts = []; // the transcript, then the recogniser's other readings of it
 let settleTimer = 0;
 
 function markSpeechConsumed() {
   staleTurn = lastTurn;
   staleWords = lastTurnWords;
   latestText = '';
+  latestTexts = [];
   if (voice.reset) voice.reset(); // iOS: fresh transcript per question
 }
 
@@ -367,40 +648,160 @@ function onTurn(msg) {
     : String(msg.transcript || '').split(/\s+/).filter(Boolean);
   lastTurn = msg.turn_order;
   lastTurnWords = words.length;
-  const text = (msg.turn_order === staleTurn ? words.slice(staleWords) : words).join(' ');
+  const stale = msg.turn_order === staleTurn;
+  const text = (stale ? words.slice(staleWords) : words).join(' ');
   latestText = text;
+  // Other readings (iOS only) cannot be trimmed word by word, so they are only
+  // used for a turn that has not been judged yet.
+  const others = !stale && Array.isArray(msg.alternatives) ? msg.alternatives : [];
+  latestTexts = [text, ...others.filter((t) => t && t !== text)];
   if (!text.trim()) return;
   if (g.q) el.heard.textContent = `🎤 “${text}”`;
-  judge(text, Boolean(msg.end_of_turn));
+  judge(latestTexts, Boolean(msg.end_of_turn));
 }
 
-function judge(text, final, settled = false) {
-  if (!g.q || g.mode !== 'playing' || g.frog.hop) return;
+// Numbers on screen as part of the question, which a child may read out
+// before answering ("three times four is twelve").
+function questionNumbers(q) {
+  return q.plain ? [] : [q.a, q.b].filter((n) => typeof n === 'number');
+}
+
+function judge(texts, final, settled = false) {
+  if (!g.q || g.mode !== 'playing' || g.frog.hop || (bridgeScene() && !bridge.ready())) return;
+  texts = (Array.isArray(texts) ? texts : [texts]).filter(Boolean);
+  if (!texts.length) return;
   if (g.q.accept) {
-    if (matchesSpoken(text, g.q.accept)) correct();
-    else if (final) wrong(normalise(text).split(' ').pop());
+    if (texts.some((t) => matchesSpoken(t, g.q.accept))) correct();
+    else if (final) {
+      wrong(normalise(texts[0]).split(' ').pop());
+      markSpeechConsumed();
+    }
     return;
   }
-  const nums = extractNumbers(text);
-  const hit = nums.find((n) => n.value === g.q.answer);
+  const { hit, guess, last } = judgeNumbers(texts, g.q.answer, questionNumbers(g.q));
   if (hit) {
     if (hit.open && !final && !settled) {
       // "fifty" might be about to become "fifty six": wait a beat.
       const id = g.q.id;
       clearTimeout(settleTimer);
       settleTimer = setTimeout(() => {
-        if (g.q && g.q.id === id) judge(latestText, false, true);
+        if (g.q && g.q.id === id) judge(latestTexts, false, true);
       }, 450);
       return;
     }
     correct();
-  } else if (final && nums.length) {
-    wrong(nums[nums.length - 1].value);
+  } else if (final && (guess || last !== null)) {
+    if (guess) oneAtATime();
+    else wrong(last);
+    // The next try starts from a clean transcript, so earlier wrong answers
+    // neither count against it nor make it look like a run of guesses.
+    markSpeechConsumed();
   }
 }
 
-const voice = new (nativeBridge ? NativeVoiceInput : VoiceInput)({
+function oneAtATime() {
+  if (bridgeScene()) {
+    bridge.wrong('One answer at a time.');
+    return;
+  }
+  el.heard.textContent = 'One answer at a time!';
+  el.question.classList.remove('shake');
+  void el.question.offsetWidth;
+  el.question.classList.add('shake');
+  sfx.nope();
+}
+
+// A letter sound ("sss", "buh") heard by the phoneme recogniser.
+function onSound(res) {
+  if (!g.q || !g.q.accept || g.mode !== 'playing' || g.frog.hop) return;
+  if (res.startedAt < g.q.shownAt) return; // said before this letter appeared
+  const heard = (res.phonemes || []).join(' ');
+  if (!heard) return;
+  el.heard.textContent = `🎤 /${heard}/`;
+  if (soundMatches(res.letters, g.q.answer)) correct();
+  else wrong(`/${heard}/`);
+}
+
+// ---------- recording mode: the grown-up is the judge ----------
+let pendingClip = null; // { clips, sound } waiting for a verdict
+let savedClips = 0;
+
+function showJudge(waiting) {
+  $('judge').hidden = !recordMode() || g.mode === 'menu' || g.mode === 'over';
+  $('judge').classList.toggle('waiting', waiting);
+  const heard = pendingClip ? pendingClip.clips.length : 0;
+  $('judgeText').textContent = waiting ? `Listening… (${savedClips} saved)` : heard > 1 ? `Was that right? (${heard} sounds)` : 'Was that right?';
+  for (const id of ['judgeRight', 'judgeWrong', 'judgeIgnore']) $(id).disabled = waiting;
+}
+
+// Called with each burst of sound from the microphone. Returns true when the
+// clip was taken for recording (so it is not sent to the recogniser).
+function onClip(chunks, startedAt) {
+  if (!recordMode()) return false;
+  if (!g.q || g.mode !== 'playing' || g.frog.hop || startedAt < g.q.shownAt) return true;
+  // She may say the sound a few times before it is judged: keep every one,
+  // and the verdict applies to them all.
+  if (pendingClip && pendingClip.sound === g.q.text) {
+    if (pendingClip.clips.length < 8) pendingClip.clips.push(new Blob(chunks));
+  } else {
+    pendingClip = { clips: [new Blob(chunks)], sound: g.q.text };
+  }
+  el.heard.textContent = pendingClip.clips.length > 1 ? `🎤 Heard ${pendingClip.clips.length} sounds` : '🎤 Heard a sound';
+  showJudge(false);
+  return true;
+}
+
+async function judgeClip(verdict) {
+  if (!pendingClip) return;
+  const { clips, sound } = pendingClip;
+  pendingClip = null;
+  if (verdict !== 'ignore') {
+    try {
+      const query = `speaker=${encodeURIComponent(speakerName())}&sound=${sound}&label=${verdict}`;
+      for (const body of clips) {
+        const r = await fetch(`/api/training?${query}`, { method: 'POST', body });
+        if (!r.ok) throw new Error((await r.json()).error || r.status);
+        savedClips++;
+      }
+    } catch (err) {
+      el.heard.textContent = `Could not save that clip (${err.message}).`;
+      showJudge(true);
+      return;
+    }
+  }
+  showJudge(true);
+  if (verdict === 'right' && g.q && g.q.text === sound && g.mode === 'playing' && !g.frog.hop) {
+    correct();
+  } else if (verdict === 'wrong') {
+    el.heard.textContent = 'Nearly! Try that one again.';
+    el.question.classList.remove('shake');
+    void el.question.offsetWidth;
+    el.question.classList.add('shake');
+    sfx.nope();
+  } else if (verdict === 'ignore') {
+    el.heard.innerHTML = '&nbsp;';
+  }
+}
+
+$('judgeRight').addEventListener('click', () => judgeClip('right'));
+$('judgeWrong').addEventListener('click', () => judgeClip('wrong'));
+$('judgeIgnore').addEventListener('click', () => judgeClip('ignore'));
+$('judgeFinish').addEventListener('click', () => {
+  pendingClip = null;
+  gameOver();
+});
+document.addEventListener('keydown', (e) => {
+  if (!recordMode() || !pendingClip || e.target === el.input || e.target === $('speakerName')) return;
+  const verdict = { ArrowRight: 'right', Enter: 'right', ArrowLeft: 'wrong', Backspace: 'wrong', ArrowDown: 'ignore', Escape: 'ignore' }[e.key];
+  if (!verdict) return;
+  e.preventDefault();
+  judgeClip(verdict);
+});
+
+const voiceHandlers = {
   onTurn,
+  onSound,
+  onClip,
   onLevel: (level) => {
     el.micDot.style.transform = `scale(${1 + Math.min(1.2, level * 12)})`;
   },
@@ -418,13 +819,37 @@ const voice = new (nativeBridge ? NativeVoiceInput : VoiceInput)({
       console.warn('voice error:', detail);
     }
   },
-});
+};
+// Words and numbers go to speech-to-text. On the web, letter sounds go to the
+// phoneme recogniser instead, when the server has one running.
+const speechVoice = new (nativeBridge ? NativeVoiceInput : VoiceInput)(voiceHandlers);
+const soundVoice = nativeBridge ? null : new PhonemeVoiceInput(voiceHandlers);
+let voice = speechVoice;
+let phonemesAvailable = false;
+const useSounds = () => soundVoice !== null && (recordMode() ? micOk() : settings.mode === 'letters' && phonemesAvailable);
+
+function chooseVoice() {
+  const want = useSounds() ? soundVoice : speechVoice;
+  if (want !== voice) {
+    voice.stop();
+    voice = want;
+  }
+  return voice === soundVoice || voiceAvailable;
+}
 
 el.form.addEventListener('submit', (e) => {
   e.preventDefault();
   const v = el.input.value.trim();
   el.input.value = '';
-  if (!v || !g.q || g.mode !== 'playing' || g.frog.hop) return;
+  if (spellingMode() && bridgeScene()) {
+    const typed = tidy(v);
+    if (g.mode !== 'playing' || !bridge.ready() || !typed) return;
+    const puzzle = bridge.state.puzzle;
+    if (typed === puzzle.right.toLowerCase()) bridge.right();
+    else bridge.wrong(typed === puzzle.wrong.toLowerCase() ? 'That is how the broken plank spells it.' : 'Not quite.');
+    return;
+  }
+  if (!v || !g.q || g.mode !== 'playing' || g.frog.hop || (bridgeScene() && !bridge.ready())) return;
   if (g.q.accept ? normalise(v) === g.q.answer : Number(v) === g.q.answer) correct();
   else wrong(v);
 });
@@ -436,8 +861,10 @@ el.startBtn.addEventListener('click', () => {
       audio = new (window.AudioContext || window.webkitAudioContext)();
     } catch {}
   }
-  if (voiceAvailable && !voice.active) voice.start(vocabulary(settings.mode));
-  else if (!voiceAvailable) el.input.focus();
+  if (spellingMode()) voice.stop();
+  const canListen = !spellingMode() && chooseVoice();
+  if (canListen && !voice.active) voice.start(hints());
+  else if (!canListen) el.input.focus();
   startGame();
 });
 
@@ -453,25 +880,30 @@ document.addEventListener('visibilitychange', () => {
     }
   } else if (pausedByHide) {
     pausedByHide = false;
-    if (inGame && voiceAvailable) voice.start(vocabulary(settings.mode));
+    if (inGame && !spellingMode() && chooseVoice()) voice.start(hints());
   }
 });
 
 (nativeBridge ? Promise.resolve({ voice: true, native: true }) : fetch('/api/status').then((r) => r.json()))
   .then((s) => {
-    voiceAvailable = Boolean(s.native) || (Boolean(s.voice) && Boolean(navigator.mediaDevices && window.AudioWorkletNode));
-    el.voiceNote.textContent = voiceAvailable
+    const micOk = Boolean(navigator.mediaDevices && window.AudioWorkletNode);
+    voiceAvailable = Boolean(s.native) || (Boolean(s.voice) && micOk);
+    phonemesAvailable = Boolean(s.phonemes) && micOk;
+    defaultNote = voiceAvailable
       ? 'Uses your microphone. Say the answer nice and clearly!'
       : s.voice
         ? 'This browser cannot use the microphone here. Type answers instead.'
         : 'Voice is not set up yet (no AssemblyAI key on the server). Type answers for now.';
+    showNote();
   })
   .catch(() => {
-    el.voiceNote.textContent = 'Cannot reach the server. Type answers for now.';
+    defaultNote = 'Cannot reach the server. Type answers for now.';
+    showNote();
   });
 
 // ---------- update ----------
 function update(dt) {
+  if (bridgeScene()) return bridge.update(dt);
   if (g.after) {
     g.after.t -= dt;
     if (g.after.t <= 0) {
@@ -596,9 +1028,13 @@ function drawCar(car) {
 
 function drawFrog() {
   const f = g.frog;
-  const lift = f.hop ? Math.sin(Math.PI * Math.min(1, f.hop.t)) : 0;
+  drawFrogAt(FROG_X, f.y, f.hop ? Math.sin(Math.PI * Math.min(1, f.hop.t)) : 0, f.flat);
+}
+
+function drawFrogAt(x, y, lift, flat) {
+  const f = { y, flat };
   ctx.save();
-  ctx.translate(FROG_X, f.y);
+  ctx.translate(x, y);
   if (f.flat) ctx.scale(1.35, 0.45);
   else ctx.scale(1 + lift * 0.3, 1 + lift * 0.3);
 
@@ -658,11 +1094,12 @@ function drawFrog() {
     ctx.fillStyle = '#d7263d';
     ctx.font = 'bold 34px "Trebuchet MS", sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText('!', FROG_X, f.y - 34);
+    ctx.fillText('!', x, f.y - 34);
   }
 }
 
 function draw() {
+  if (bridgeScene()) return bridge.draw();
   drawWorld();
   if (g.frog.flat) drawFrog();
   g.cars.forEach(drawCar);
@@ -674,6 +1111,26 @@ function draw() {
   }
   ctx.globalAlpha = 1;
 }
+
+const spellingPuzzles = createSpellingPuzzles(el);
+const bridge = createBridgeGame({
+  W, H, ctx, g, el, drawFrogAt, updateHud, gameOver, sfx,
+  // Three wrong answers: the answer is shown, and the question comes back later.
+  onReveal: (puzzle) => {
+    if (spellingMode()) {
+      spellingPuzzles.forget(puzzle.source);
+    } else if (g.q) {
+      g.retry.push({ a: g.q.a, b: g.q.b, due: g.asked + 2 });
+      g.q = null;
+    }
+  },
+  // The frog has climbed out after a wrong answer: listen afresh.
+  onResume: () => {
+    if (!g.q) return;
+    g.q.shownAt = performance.now();
+    markSpeechConsumed();
+  },
+});
 
 let prev = performance.now();
 function frame(now) {
@@ -687,4 +1144,4 @@ updateHud();
 requestAnimationFrame(frame);
 
 // Handy for testing without a microphone: __hop.hear('fifty six')
-window.__hop = { hear: (text) => judge(text, true), step: update, state: g };
+window.__hop = { hear: (text) => judge([text], true), step: update, state: g, bridge };

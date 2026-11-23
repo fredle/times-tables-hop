@@ -9,6 +9,8 @@
 <body>
   <main id="app">
     <header id="hud">
+      <button id="backBtn" type="button" hidden aria-label="Back to menu">‹ Menu</button>
+      <button id="hintBtn" type="button" hidden>💡 Hint</button>
       <div class="stat"><span class="label">Score</span><span id="score">0</span></div>
       <div class="stat"><span class="label">Level</span><span id="level">1</span></div>
       <div class="stat"><span class="label">Lives</span><span id="lives"></span></div>
@@ -19,6 +21,7 @@
       <div id="question">Ready?</div>
       <div id="timer"><div id="timerFill"></div></div>
       <div id="heard">&nbsp;</div>
+      <div id="hint" hidden></div>
     </section>
 
     <div id="stage">
@@ -33,7 +36,21 @@
           <button type="button" data-mode="numbers">Numbers 1–9</button>
           <button type="button" data-mode="letters">Letters</button>
           <button type="button" data-mode="words">Words</button>
+          <button type="button" data-mode="next">What comes next?</button>
           <button type="button" data-mode="tables">Times tables</button>
+          <button type="button" data-mode="spelling">Spelling</button>
+          <button type="button" data-mode="record" id="recordModeBtn">Record sounds</button>
+        </div>
+        <div id="sceneSection" hidden>
+          <h2>How to play</h2>
+          <div id="scenes" class="chips">
+            <button type="button" data-scene="road">Cross the road</button>
+            <button type="button" data-scene="bridge">Mend the bridge</button>
+          </div>
+        </div>
+        <div id="recordSection" hidden>
+          <h2>Child's name (clips are filed under it)</h2>
+          <input id="speakerName" type="text" maxlength="30" autocomplete="off" placeholder="e.g. daisy">
         </div>
         <div id="tablesSection">
           <h2>Which tables?</h2>
@@ -48,6 +65,14 @@
         <button id="startBtn" type="button" class="big">Play</button>
         <p id="voiceNote" class="note"></p>
       </div>
+    </div>
+
+    <div id="judge" hidden>
+      <span id="judgeText">Was that right?</span>
+      <button type="button" id="judgeRight">✓ Right (→)</button>
+      <button type="button" id="judgeWrong">✗ Not right (←)</button>
+      <button type="button" id="judgeIgnore">Ignore (↓)</button>
+      <button type="button" id="judgeFinish">Finish</button>
     </div>
 
     <form id="answerForm" autocomplete="off">

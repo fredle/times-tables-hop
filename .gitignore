@@ -19,3 +19,10 @@ node_modules/
 *.db-shm
 *.db-wal
 server/deploy/secrets/
+
+# Python environment for the phoneme prototype
+.venv/
+__pycache__/
+# Children's voice clips kept for tuning: never commit
+phoneme/recordings/
+phoneme/training/

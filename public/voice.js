@@ -19,7 +19,7 @@ export class NativeVoiceInput {
     this.turn = 0;
     this.timer = 0;
     window.__nativeVoice = {
-      onResult: (text, turn) => this.result(text, turn),
+      onResult: (text, turn, alternatives) => this.result(text, turn, alternatives),
       onState: (state, detail) => {
         if (!this.active) return;
         if (state === 'error') this.active = false;
@@ -56,16 +56,18 @@ export class NativeVoiceInput {
     if (this.active) this.post({ cmd: 'reset', turn: this.turn });
   }
 
-  result(text, turn) {
+  /** @param {string[]} [alternatives] the recogniser's other readings of the same speech */
+  result(text, turn, alternatives = []) {
     if (!this.active || turn !== this.turn) return;
-    const msg = { turn_order: turn, transcript: text, end_of_turn: false };
+    const msg = { turn_order: turn, transcript: text, alternatives, end_of_turn: false };
     this.h.onTurn(msg);
     // The phone never says "that's the end of the sentence" mid-question, so
-    // treat a transcript that has stopped changing as finished.
+    // treat a transcript that has stopped changing as finished. Children stop
+    // to think mid-answer, so allow a good pause before calling it wrong.
     clearTimeout(this.timer);
     this.timer = setTimeout(() => {
       if (this.active && turn === this.turn) this.h.onTurn({ ...msg, end_of_turn: true });
-    }, 900);
+    }, 1500);
   }
 }
 
@@ -182,5 +184,127 @@ export class VoiceInput {
     if (this.ctx) this.ctx.close().catch(() => {});
     this.ctx = null;
     if (wasActive) this.h.onState('off');
+  }
+}
+
+/** Opens the microphone as a stream of ~100 ms chunks of 16-bit PCM. */
+async function openMic(onChunk) {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  const Ctx = window.AudioContext || window.webkitAudioContext;
+  const ctx = new Ctx({ sampleRate: 16000 });
+  const close = () => {
+    stream.getTracks().forEach((t) => t.stop());
+    ctx.close().catch(() => {});
+  };
+  try {
+    await ctx.audioWorklet.addModule('pcm-worklet.js');
+    const node = new AudioWorkletNode(ctx, 'pcm-chunker');
+    node.port.onmessage = (e) => onChunk(e.data.pcm, e.data.level);
+    const silent = ctx.createGain();
+    silent.gain.value = 0;
+    ctx.createMediaStreamSource(stream).connect(node).connect(silent).connect(ctx.destination);
+  } catch (err) {
+    close();
+    throw err;
+  }
+  return { sampleRate: ctx.sampleRate, close };
+}
+
+/**
+ * Listens for single short sounds ("sss", "buh") rather than words. Each
+ * burst of sound is cut out of the microphone stream and sent to the server's
+ * phoneme recogniser; the answer arrives through handlers.onSound as
+ * {phonemes, letters: [{letter, score}], startedAt}.
+ */
+export class PhonemeVoiceInput {
+  constructor(handlers) {
+    this.h = handlers;
+    this.active = false;
+    this.mic = null;
+    this.noise = 0.004;
+    this.target = ''; // the letter on screen, stored with the recording
+    this.paused = false;
+    this.source = 'game';
+    this.clear();
+  }
+
+  clear() {
+    this.speaking = false;
+    this.before = []; // the last few quiet chunks, so the start of a sound is not clipped
+    this.clip = [];
+    this.quiet = 0;
+  }
+
+  async start() {
+    if (this.active) return;
+    this.active = true;
+    this.h.onState('connecting');
+    try {
+      const mic = await openMic((pcm, level) => this.chunk(pcm, level));
+      if (!this.active) return mic.close();
+      if (mic.sampleRate !== 16000) {
+        mic.close();
+        throw new Error('unsupported_sample_rate');
+      }
+      this.mic = mic;
+      this.h.onState('listening');
+    } catch (err) {
+      if (!this.active) return;
+      this.active = false;
+      const denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+      const missing = err && (err.name === 'NotFoundError' || err.name === 'OverconstrainedError');
+      this.h.onState('error', denied ? 'mic_denied' : missing ? 'no_mic' : err.message || 'voice_failed');
+    }
+  }
+
+  stop() {
+    if (!this.active) return;
+    this.active = false;
+    if (this.mic) this.mic.close();
+    this.mic = null;
+    this.clear();
+    this.h.onState('off');
+  }
+
+  chunk(pcm, level) {
+    if (!this.active) return;
+    if (this.h.onLevel) this.h.onLevel(level);
+    if (this.h.onChunk) this.h.onChunk(pcm, level);
+    if (this.paused) return this.clear(); // e.g. while a clip is being played back
+    const loud = level > Math.max(0.012, this.noise * 3);
+    if (!this.speaking) {
+      if (!loud) this.noise = this.noise * 0.95 + level * 0.05;
+      this.before.push(pcm);
+      if (this.before.length > 3) this.before.shift();
+      if (loud) {
+        this.speaking = true;
+        this.startedAt = performance.now() - 100;
+        this.clip = this.before;
+        this.before = [];
+        this.quiet = 0;
+      }
+      return;
+    }
+    this.clip.push(pcm);
+    this.quiet = loud ? 0 : this.quiet + 1;
+    // Done after 0.4 s of quiet, or 3 s in total.
+    if (this.quiet >= 4 || this.clip.length >= 30) this.send();
+  }
+
+  async send() {
+    const clip = this.clip;
+    const startedAt = this.startedAt;
+    this.clear();
+    // In the recording game the clip is kept for training instead of recognised.
+    if (this.h.onClip && this.h.onClip(clip, startedAt)) return;
+    try {
+      const query = `target=${encodeURIComponent(this.target || '')}&from=${encodeURIComponent(this.source)}`;
+      const r = await fetch(`/api/phonemes?${query}`, { method: 'POST', body: new Blob(clip) });
+      if (!r.ok) return;
+      const result = await r.json();
+      if (this.active && this.h.onSound) this.h.onSound({ ...result, startedAt });
+    } catch {}
   }
 }

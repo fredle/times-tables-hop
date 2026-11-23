@@ -71,3 +71,16 @@ export function matchesSpoken(text, accept) {
   const said = ` ${normalise(text)} `;
   return accept.some((form) => said.includes(` ${form} `));
 }
+
+/**
+ * Did the phoneme recogniser hear this letter's sound? `letters` is its list
+ * of {letter, score} for one clip. The letter passes when its sound was clearly
+ * present and at most a couple of other sounds scored higher: easily confused
+ * sounds (b/d/p, m/n, f/s) get the benefit of the doubt.
+ */
+export function soundMatches(letters, letter, { minScore = 0.25, maxRank = 3 } = {}) {
+  const mine = (letters || []).find((l) => l.letter === letter);
+  if (!mine || mine.score < minScore) return false;
+  const rank = 1 + letters.filter((l) => l.score > mine.score).length;
+  return rank <= maxRank;
+}

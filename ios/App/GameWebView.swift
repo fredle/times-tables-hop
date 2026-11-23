@@ -39,8 +39,8 @@ final class GameBridge: NSObject, WKScriptMessageHandler {
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
-        listener.onResult = { [weak self] text, turn in
-            self?.call("onResult", [text, turn])
+        listener.onResult = { [weak self] text, turn, alternatives in
+            self?.call("onResult", [text, turn, alternatives])
         }
         listener.onState = { [weak self] state, detail in
             self?.call("onState", [state, detail ?? ""])
@@ -97,6 +97,7 @@ final class BundleSchemeHandler: NSObject, WKURLSchemeHandler {
         "json": "application/json; charset=utf-8",
         "svg": "image/svg+xml",
         "png": "image/png",
+        "woff2": "font/woff2",
     ]
 
     func webView(_ webView: WKWebView, start urlSchemeTask: WKURLSchemeTask) {

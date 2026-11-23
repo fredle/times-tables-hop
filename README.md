@@ -34,6 +34,28 @@ time you press Play. Scores and settings are stored on the phone.
 Without a key the game still works, with typed answers only. The microphone
 only works on `localhost` or over HTTPS.
 
+## Letter sounds (prototype, website only)
+
+Reception-age children say the sound a letter makes ("sss", "buh"), not its
+name, and ordinary speech-to-text cannot hear that. With the optional phoneme
+service running, the Letters game on the website listens for the sound
+instead.
+
+Set it up once (about 1.5 GB of downloads: PyTorch and the
+`facebook/wav2vec2-lv-60-espeak-cv-ft` model):
+
+```bash
+python -m venv .venv
+.venv/Scripts/python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+.venv/Scripts/python -m pip install transformers numpy
+```
+
+`npm start` then starts `phoneme/service.py` by itself (set `PHONEME=off` to
+skip it). Open `/phonics-lab.html` to try sounds one at a time and see what
+the model heard, how each letter scored, and whether the game would accept it.
+The letter-to-sound table and the accept rule (`soundMatches` in
+`public/reading.js`) are first guesses to be tuned with real children.
+
 ## How it works
 
 - `server.js`: zero-dependency Node server. Serves `public/` and exposes

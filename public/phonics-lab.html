@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phonics Lab</title>
+  <style>
+    body { margin: 0; padding: 20px; background: #12372a; color: #fff; font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { margin: 0 0 4px; }
+    p { opacity: .85; line-height: 1.4; }
+    .bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 16px 0; }
+    button, select { font: inherit; font-size: 18px; padding: 8px 16px; border: 0; border-radius: 10px; }
+    button { background: #ffb703; font-weight: 700; cursor: pointer; }
+    #state { opacity: .8; }
+    #meter { width: 120px; height: 10px; background: rgba(255,255,255,.2); border-radius: 5px; overflow: hidden; }
+    #meter div { height: 100%; width: 0; background: #4ade80; }
+    table { width: 100%; border-collapse: collapse; background: #fffdf4; color: #1d2b24; border-radius: 12px; overflow: hidden; }
+    th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #e4e0d0; font-size: 15px; }
+    th { font-size: 12px; text-transform: uppercase; letter-spacing: .06em; opacity: .7; }
+    td.ph { font-size: 20px; font-weight: 700; }
+    .pass { color: #2a9d4b; font-weight: 700; }
+    .fail { color: #d7263d; font-weight: 700; }
+    .top b { display: inline-block; min-width: 14px; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Phonics Lab</h1>
+  <p>A test bench for the letter-sound recogniser. Press Start, pick the letter you are about to say, then say its
+     sound once (“sss”, “mmm”, “buh”). Each sound gets a row: what the model heard, which letters it matched best,
+     and whether the Letters game would have accepted it.</p>
+  <div class="bar">
+    <button id="toggle">Start</button>
+    <label>Target letter <select id="target"></select></label>
+    <div id="meter"><div></div></div>
+    <span id="state">Mic off</span>
+  </div>
+  <table>
+    <thead><tr><th>Target</th><th>Heard</th><th>Best letters (score)</th><th>Game</th><th>Clip / model</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p id="tally"></p>
+</main>
+<script type="module">
+  import { PhonemeVoiceInput } from './voice.js';
+  import { soundMatches } from './reading.js';
+
+  const $ = (id) => document.getElementById(id);
+  for (const l of 'abcdefghijklmnopqrstuvwxyz') $('target').add(new Option(l, l));
+  $('target').value = 's';
+  let passes = 0;
+  let total = 0;
+
+  const input = new PhonemeVoiceInput({
+    onState: (state, detail) => {
+      $('state').textContent = { off: 'Mic off', connecting: 'Connecting…', listening: 'Listening', error: `Problem: ${detail}` }[state] || state;
+      $('toggle').textContent = input.active ? 'Stop' : 'Start';
+    },
+    onLevel: (level) => {
+      $('meter').firstElementChild.style.width = `${Math.min(100, level * 600)}%`;
+    },
+    onSound: (res) => {
+      const target = $('target').value;
+      const ok = soundMatches(res.letters, target);
+      total++;
+      if (ok) passes++;
+      const top = (res.letters || []).slice(0, 5).map((l) => `<b>${l.letter}</b> ${l.score.toFixed(2)}`).join(' &nbsp; ');
+      const row = document.createElement('tr');
+      row.innerHTML = `<td>${target}</td><td class="ph">/${(res.phonemes || []).join(' ') || '–'}/</td><td class="top">${top}</td>` +
+        `<td class="${ok ? 'pass' : 'fail'}">${ok ? 'accept' : 'reject'}</td><td>${Math.round(performance.now() - res.startedAt)} ms ago / ${res.ms} ms</td>`;
+      $('rows').prepend(row);
+      $('tally').textContent = `${passes} of ${total} accepted.`;
+    },
+  });
+
+  input.source = 'lab';
+  input.target = $('target').value;
+  $('target').addEventListener('change', () => { input.target = $('target').value; });
+
+  $('toggle').addEventListener('click', async () => {
+    if (input.active) return input.stop();
+    const status = await fetch('/api/status').then((r) => r.json()).catch(() => ({}));
+    if (!status.phonemes) {
+      $('state').textContent = 'The phoneme service is not running on the server (still loading, or not installed).';
+      return;
+    }
+    input.start();
+  });
+</script>
+</body>
+</html>
