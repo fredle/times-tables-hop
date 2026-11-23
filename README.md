@@ -11,6 +11,12 @@ Four games, picked on the start screen:
 - **Words**: read a simple three-letter word (cat, dog, sun).
 - **Times tables**: choose which tables, answer the multiplication.
 
+Numbers, Letters, Words and Times tables can also be played as a **block
+puzzle**: three blocks in a tray each carry a question, and saying a block's
+answer drops it onto an 8x8 board. Full rows and columns clear. There is no
+timer; say "swap" (or tap Swap) for new blocks, three times a game, and the
+game ends when nothing fits.
+
 It runs as a website and as an iPhone app, from the same game code.
 
 ## iPhone app

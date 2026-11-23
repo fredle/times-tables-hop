@@ -1,6 +1,7 @@
 import { judgeNumbers } from './numbers.js';
 import { isReadingMode, items, accepted, vocabulary, matchesSpoken, soundMatches, normalise } from './reading.js';
 import { createBridgeGame } from './bridge.js';
+import { createBlockGame } from './blockscene.js';
 import { hintsFor, spellingHints } from './hints.js';
 import { createSpellingPuzzles, tidy } from './spelling.js';
 import { COLOURS, makeSequence, nextVocabulary } from './next.js';
@@ -66,10 +67,17 @@ const spellingMode = () => settings.mode === 'spelling';
 // Every game can be played crossing the road or mending the bridge
 // (recording sounds stays on the road, where nothing rushes the child).
 const SCENE_MODES = ['numbers', 'letters', 'words', 'next', 'tables', 'spelling'];
-if (settings.scene !== 'bridge') settings.scene = 'road';
+if (!['bridge', 'blocks'].includes(settings.scene)) settings.scene = 'road';
 const bridgeScene = () => settings.scene === 'bridge' && SCENE_MODES.includes(settings.mode);
+// The block puzzle needs short questions that fit on a block.
+const BLOCK_MODES = ['numbers', 'letters', 'words', 'tables'];
+const blockScene = () => settings.scene === 'blocks' && BLOCK_MODES.includes(settings.mode);
+const SWAP_WORDS = ['swap', 'swop', 'new blocks', 'change'];
 // What the speech recogniser should expect in the chosen game.
-const hints = () => (nextMode() ? nextVocabulary() : vocabulary(settings.mode));
+const hints = () => {
+  const words = nextMode() ? nextVocabulary() : vocabulary(settings.mode);
+  return blockScene() ? [...words, 'swap'] : words;
+};
 const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
 let best = load('tth.best', 0);
 
@@ -90,7 +98,11 @@ function renderChips() {
   el.modes.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.mode === settings.mode));
   el.tablesSection.hidden = !tablesMode();
   $('sceneSection').hidden = !SCENE_MODES.includes(settings.mode);
-  $('scenes').querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.scene === settings.scene));
+  const scene = settings.scene === 'blocks' && !BLOCK_MODES.includes(settings.mode) ? 'road' : settings.scene;
+  $('scenes').querySelectorAll('button').forEach((b) => {
+    b.classList.toggle('on', b.dataset.scene === scene);
+    if (b.dataset.scene === 'blocks') b.hidden = !BLOCK_MODES.includes(settings.mode);
+  });
   $('recordSection').hidden = !recordMode();
   $('recordModeBtn').hidden = Boolean(nativeBridge);
   el.startBtn.disabled = (tablesMode() && settings.tables.length === 0) || (recordMode() && !speakerName());
@@ -358,6 +370,15 @@ function startGame() {
     bridge.start(nextBridgePuzzle);
     return;
   }
+  if (blockScene()) {
+    g.q = null;
+    $('hintBtn').hidden = true; // hints are for one question; the tray has three
+    el.timerFill.style.width = '0';
+    el.heard.innerHTML = '&nbsp;';
+    blocks.start();
+    updateHud();
+    return;
+  }
   askQuestion();
   if (spellingMode()) el.input.focus();
 }
@@ -555,6 +576,7 @@ function backToMenu() {
   voice.stop();
   bridge.state.phase = 'idle';
   bridge.state.planks = [];
+  blocks.stop();
   $('backBtn').hidden = true;
   $('hintBtn').hidden = true;
   clearHint();
@@ -582,7 +604,7 @@ function gameOver() {
     best = g.score;
     save('tth.best', best);
   }
-  el.menuMsg.textContent = 'Game over. Nice hopping!';
+  el.menuMsg.textContent = blockScene() ? 'No more room. Great building!' : 'Game over. Nice hopping!';
   el.result.hidden = false;
   el.result.textContent = `Score ${g.score}${isBest ? ' (new best!)' : ` · Best ${best}`}`;
   el.startBtn.textContent = 'Play again';
@@ -597,7 +619,11 @@ function gameOver() {
 function updateHud() {
   el.score.textContent = g.score;
   el.level.textContent = g.level;
-  el.lives.textContent = '❤'.repeat(Math.max(0, g.lives)) || '–';
+  const swaps = blockScene() && g.mode !== 'menu';
+  el.lives.previousElementSibling.textContent = swaps ? 'Swaps' : 'Lives';
+  el.lives.textContent = swaps
+    ? '🔄'.repeat(Math.max(0, blocks.state.swaps)) || '–'
+    : '❤'.repeat(Math.max(0, g.lives)) || '–';
 }
 
 function burst(x, y, n, colors) {
@@ -656,7 +682,7 @@ function onTurn(msg) {
   const others = !stale && Array.isArray(msg.alternatives) ? msg.alternatives : [];
   latestTexts = [text, ...others.filter((t) => t && t !== text)];
   if (!text.trim()) return;
-  if (g.q) el.heard.textContent = `🎤 “${text}”`;
+  if (g.q || (blockScene() && blocks.ready())) el.heard.textContent = `🎤 “${text}”`;
   judge(latestTexts, Boolean(msg.end_of_turn));
 }
 
@@ -667,6 +693,7 @@ function questionNumbers(q) {
 }
 
 function judge(texts, final, settled = false) {
+  if (blockScene()) return judgeBlocks((Array.isArray(texts) ? texts : [texts]).filter(Boolean), final, settled);
   if (!g.q || g.mode !== 'playing' || g.frog.hop || (bridgeScene() && !bridge.ready())) return;
   texts = (Array.isArray(texts) ? texts : [texts]).filter(Boolean);
   if (!texts.length) return;
@@ -697,6 +724,57 @@ function judge(texts, final, settled = false) {
     // neither count against it nor make it look like a run of guesses.
     markSpeechConsumed();
   }
+}
+
+// The block puzzle: the answer can belong to any block in the tray.
+function judgeBlocks(texts, final, settled) {
+  if (g.mode !== 'playing' || !blocks.ready() || !texts.length) return;
+  if (texts.some((t) => matchesSpoken(t, SWAP_WORDS))) {
+    blocks.swap();
+    markSpeechConsumed();
+    return;
+  }
+  const pieces = blocks.live();
+  if (!pieces.length) return;
+  let found = null;
+  let wait = false;
+  let guess = false;
+  let last = null;
+  if (pieces[0].q.accept) {
+    found = pieces.find((p) => texts.some((t) => matchesSpoken(t, p.q.accept)));
+    last = normalise(texts[0]).split(' ').pop();
+  } else {
+    const shown = pieces.flatMap((p) => questionNumbers(p.q));
+    for (const p of pieces) {
+      const r = judgeNumbers(texts, p.q.answer, shown);
+      guess = guess || r.guess;
+      last = r.last;
+      if (!r.hit) continue;
+      // "forty" might be about to become "forty-two", another block's answer.
+      if (r.hit.open && !final && !settled) wait = true;
+      else {
+        found = p;
+        break;
+      }
+    }
+  }
+  if (found) {
+    blocks.answer(found.piece);
+    markSpeechConsumed();
+    return;
+  }
+  if (wait) {
+    clearTimeout(settleTimer);
+    settleTimer = setTimeout(() => {
+      if (blockScene() && blocks.ready()) judge(latestTexts, false, true);
+    }, 450);
+    return;
+  }
+  if (!final || (!guess && (last === null || last === ''))) return;
+  g.streak = 0;
+  el.heard.textContent = guess ? 'One answer at a time!' : `I heard ${last}. No block has that answer.`;
+  sfx.nope();
+  markSpeechConsumed();
 }
 
 function oneAtATime() {
@@ -841,6 +919,17 @@ el.form.addEventListener('submit', (e) => {
   e.preventDefault();
   const v = el.input.value.trim();
   el.input.value = '';
+  if (blockScene()) {
+    if (!v || g.mode !== 'playing' || !blocks.ready()) return;
+    if (/^swap$/i.test(v)) return void blocks.swap();
+    const p = blocks.live().find((b) => (b.q.accept ? normalise(v) === b.q.answer : Number(v) === b.q.answer));
+    if (p) blocks.answer(p.piece);
+    else {
+      el.heard.textContent = `No block has ${v}.`;
+      sfx.nope();
+    }
+    return;
+  }
   if (spellingMode() && bridgeScene()) {
     const typed = tidy(v);
     if (g.mode !== 'playing' || !bridge.ready() || !typed) return;
@@ -904,6 +993,7 @@ document.addEventListener('visibilitychange', () => {
 // ---------- update ----------
 function update(dt) {
   if (bridgeScene()) return bridge.update(dt);
+  if (blockScene()) return blocks.update(dt);
   if (g.after) {
     g.after.t -= dt;
     if (g.after.t <= 0) {
@@ -1100,6 +1190,7 @@ function drawFrogAt(x, y, lift, flat) {
 
 function draw() {
   if (bridgeScene()) return bridge.draw();
+  if (blockScene() && g.mode !== 'menu') return blocks.draw();
   drawWorld();
   if (g.frog.flat) drawFrog();
   g.cars.forEach(drawCar);
@@ -1132,6 +1223,32 @@ const bridge = createBridgeGame({
   },
 });
 
+// Block puzzle: a question for a new block, with an answer no other block in
+// the tray already has.
+function blockQuestion(taken) {
+  let q;
+  for (let i = 0; i < 25; i++) {
+    q = pickQuestion();
+    if (!taken.includes(q.answer)) break;
+  }
+  q.shownAt = performance.now();
+  return q;
+}
+const blocks = createBlockGame({
+  W, H, ctx, g, el, updateHud, gameOver, sfx,
+  makeQuestion: blockQuestion,
+  // The tray changed: listen afresh, so speech meant for an old block does
+  // not count for a new one.
+  onChange: () => markSpeechConsumed(),
+});
+canvas.addEventListener('pointerdown', (e) => {
+  if (!blockScene() || g.mode !== 'playing') return;
+  const r = canvas.getBoundingClientRect();
+  const hit = blocks.hitTest(((e.clientX - r.left) * W) / r.width, ((e.clientY - r.top) * H) / r.height);
+  if (hit === 'swap') blocks.swap();
+  else if (hit === 'tray' && blocks.ready()) el.heard.textContent = 'Say the answer on a block to place it.';
+});
+
 let prev = performance.now();
 function frame(now) {
   const dt = Math.min(0.05, (now - prev) / 1000);
@@ -1144,4 +1261,4 @@ updateHud();
 requestAnimationFrame(frame);
 
 // Handy for testing without a microphone: __hop.hear('fifty six')
-window.__hop = { hear: (text) => judge([text], true), step: update, state: g, bridge };
+window.__hop = { hear: (text) => judge([text], true), step: update, state: g, bridge, blocks };

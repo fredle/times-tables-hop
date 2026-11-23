@@ -15,6 +15,9 @@ One game, two shells:
 - `public/game.js`: the game and all four modes (times tables, numbers 1-9,
   letters, three-letter words). `public/numbers.js` and `public/reading.js`
   turn transcripts into answers; both have tests in `test/` (`npm test`).
+- `public/blocks.js`: block puzzle rules (board, shapes, placement, line
+  clears), tested in `test/blocks.test.mjs`. `public/blockscene.js`: its
+  drawing and tray; `game.js` judges which tray block an answer belongs to.
 - `public/voice.js`: `VoiceInput` (AssemblyAI) and `NativeVoiceInput` (iOS).
   The page picks the native one when `window.webkit.messageHandlers.voice`
   exists. Native code calls back into `window.__nativeVoice`.
