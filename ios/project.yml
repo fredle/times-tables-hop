@@ -12,7 +12,7 @@ settings:
     DEVELOPMENT_TEAM: R53MF3F498
     CODE_SIGN_STYLE: Automatic
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.0"
+    MARKETING_VERSION: "1.0.1"
     CURRENT_PROJECT_VERSION: "1"
     # iPhone only: a portrait-only app that also targets iPad is rejected on upload.
     TARGETED_DEVICE_FAMILY: "1"
