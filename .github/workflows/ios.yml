@@ -22,7 +22,7 @@ permissions:
 
 jobs:
   testflight:
-    runs-on: macos-26
+    runs-on: xcode-27
     timeout-minutes: 30
     env:
       # Filled in by app-factory. The project is generated from ios/project.yml.
