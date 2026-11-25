@@ -153,6 +153,18 @@ button.big {
 }
 button.big:disabled { opacity: .5; cursor: default; }
 .note { font-size: 13px; opacity: .75; min-height: 18px; }
+button.link {
+  margin-top: 4px;
+  padding: 6px 10px;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 13px;
+  opacity: .7;
+  text-decoration: underline;
+  cursor: pointer;
+}
 
 #answerForm {
   display: flex;

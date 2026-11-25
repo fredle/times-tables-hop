@@ -65,6 +65,8 @@
         </div>
         <button id="startBtn" type="button" class="big">Play</button>
         <p id="voiceNote" class="note"></p>
+        <!-- iPhone app only: opens the native feedback sheet behind a grown-ups' gate. -->
+        <button id="grownUpsBtn" type="button" class="link" hidden>For grown-ups</button>
       </div>
     </div>
 
@@ -83,5 +85,13 @@
     </form>
   </main>
   <script type="module" src="game.js"></script>
+  <script type="module">
+    const bridge = window.webkit?.messageHandlers?.voice;
+    const btn = document.getElementById('grownUpsBtn');
+    if (bridge && btn) {
+      btn.hidden = false;
+      btn.addEventListener('click', () => bridge.postMessage({ cmd: 'grownups' }));
+    }
+  </script>
 </body>
 </html>

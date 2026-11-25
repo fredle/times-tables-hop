@@ -5,8 +5,13 @@ import WebKit
 /// Hosts the web game (the files in the bundled `public` folder) and connects
 /// it to on-device speech recognition and haptics.
 struct GameWebView: UIViewRepresentable {
+    /// Called when the page asks for the grown-ups' area (the feedback sheet).
+    var onGrownUps: () -> Void = {}
+
     func makeCoordinator() -> GameBridge {
-        GameBridge()
+        let bridge = GameBridge()
+        bridge.onGrownUps = onGrownUps
+        return bridge
     }
 
     func makeUIView(context: Context) -> WKWebView {
@@ -36,6 +41,7 @@ struct GameWebView: UIViewRepresentable {
 final class GameBridge: NSObject, WKScriptMessageHandler {
     private weak var webView: WKWebView?
     private let listener = SpeechListener()
+    var onGrownUps: () -> Void = {}
 
     func attach(_ webView: WKWebView) {
         self.webView = webView
@@ -59,6 +65,8 @@ final class GameBridge: NSObject, WKScriptMessageHandler {
             listener.stop()
         case "haptic":
             haptic(body["kind"] as? String ?? "")
+        case "grownups":
+            onGrownUps()
         default:
             break
         }

@@ -40,6 +40,8 @@ targets:
         UIRequiresFullScreen: true
         # Standard HTTPS only: skips the per-build "Missing Compliance" question.
         ITSAppUsesNonExemptEncryption: false
+        # Where the grown-ups' feedback sheet sends notes (Feedback.swift).
+        FeedbackURL: "https://feedback.leatham.net/v1/feedback"
         NSMicrophoneUsageDescription: Times Tables Hop listens for your spoken answers while you play.
         NSSpeechRecognitionUsageDescription: Times Tables Hop turns your spoken answers into numbers so the frog can hop.
     settings:
