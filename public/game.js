@@ -745,17 +745,22 @@ function judgeBlocks(texts, final, settled) {
     last = normalise(texts[0]).split(' ').pop();
   } else {
     const shown = pieces.flatMap((p) => questionNumbers(p.q));
-    for (const p of pieces) {
-      const r = judgeNumbers(texts, p.q.answer, shown);
-      guess = guess || r.guess;
-      last = r.last;
-      if (!r.hit) continue;
-      // "forty" might be about to become "forty-two", another block's answer.
-      if (r.hit.open && !final && !settled) wait = true;
-      else {
-        found = p;
-        break;
+    // An exact answer on any block wins over a sound-alike (40 for 14) on
+    // another, so try every block exactly first.
+    for (const near of [false, true]) {
+      for (const p of pieces) {
+        const r = judgeNumbers(texts, p.q.answer, shown, 2, { near });
+        guess = guess || r.guess;
+        last = r.last;
+        if (!r.hit || (near && !r.hit.near)) continue;
+        // "forty" might be about to become "forty-two", another block's answer.
+        if (r.hit.open && !final && !settled) wait = true;
+        else {
+          found = p;
+          break;
+        }
       }
+      if (found || wait) break;
     }
   }
   if (found) {

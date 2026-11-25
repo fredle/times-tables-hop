@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { extractNumbers, judgeNumbers } from '../public/numbers.js';
+import { extractNumbers, judgeNumbers, soundsLike } from '../public/numbers.js';
 
 const values = (t) => extractNumbers(t).map((n) => n.value);
 
@@ -90,6 +90,42 @@ test('a run of numbers is a guess', () => {
 test('reading the question aloud is not a guess', () => {
   assert.equal(hit(['three times four is twelve'], 12, [3, 4]), 12);
   assert.equal(hit(['three times four is twelve'], 12), null);
+});
+
+test('words that only sound like numbers are read as numbers', () => {
+  assert.deepEqual(values('sex'), [6]);
+  assert.deepEqual(values('forty sex'), [46]);
+  assert.deepEqual(values('sexy'), [60]);
+  assert.deepEqual(values('sexty three'), [63]);
+  assert.deepEqual(values('sex teen'), [16]);
+  assert.deepEqual(values('six teen'), [16]);
+  assert.deepEqual(values('sexteen'), [16]);
+  assert.equal(hit(['sex'], 6), 6);
+});
+
+test('sound-alike teens and tens count as the answer', () => {
+  assert.deepEqual(soundsLike(14), [40]);
+  assert.deepEqual(soundsLike(40), [14]);
+  assert.deepEqual(soundsLike(114), [140]);
+  assert.deepEqual(soundsLike(12), []);
+  assert.deepEqual(soundsLike(20), []);
+  assert.deepEqual(soundsLike(42), []);
+  assert.equal(hit(['forty'], 14), 40);
+  assert.equal(judgeNumbers(['forty'], 14).hit.near, true);
+  assert.equal(hit(['fourteen'], 40), 14);
+  assert.equal(hit(['sixty'], 16), 60);
+  assert.equal(hit(['one hundred and forty'], 114), 140);
+  // Only those pairs: 41 is not 14, 42 is not 24.
+  assert.equal(hit(['forty one'], 14), null);
+  assert.equal(hit(['forty two'], 24), null);
+  // An exact answer in any reading beats a sound-alike in the first.
+  assert.equal(judgeNumbers(['forty', 'fourteen'], 14).hit.near, undefined);
+  // "forty" may still be growing into "forty four", so it stays open.
+  assert.equal(judgeNumbers(['forty'], 14).hit.open, true);
+  // Can be turned off.
+  assert.equal(judgeNumbers(['forty'], 14, [], 2, { near: false }).hit, null);
+  // A run of numbers is still a guess.
+  assert.equal(hit(['thirty forty fifty'], 14), null);
 });
 
 test('last number heard, for the wrong-answer message', () => {
