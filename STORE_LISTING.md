@@ -42,7 +42,7 @@ Primary: Education. Secondary: Games (Family).
 
 ## App Privacy
 
-Data not collected. The app has no analytics, accounts or servers. Spoken answers are turned into text by Apple's speech recognition (on the device where supported) and are not stored.
+Customer Support (the optional grown-ups feedback note): used for App Functionality, not linked to the user, not used for tracking. Nothing else is collected; the app has no analytics or accounts. Privacy policy: https://github.com/fredle/times-tables-hop/blob/main/PRIVACY.md. Spoken answers are turned into text by Apple's speech recognition (on the device where supported) and are not stored.
 
 ## Age rating notes
 

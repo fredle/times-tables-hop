@@ -11,7 +11,7 @@
 		<!-- The optional "What would make this better?" note, behind the grown-ups' gate (Feedback.swift). -->
 		<dict>
 			<key>NSPrivacyCollectedDataType</key>
-			<string>NSPrivacyCollectedDataTypeOtherUserContent</string>
+			<string>NSPrivacyCollectedDataTypeCustomerSupport</string>
 			<key>NSPrivacyCollectedDataTypeLinked</key>
 			<false/>
 			<key>NSPrivacyCollectedDataTypeTracking</key>
